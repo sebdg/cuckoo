@@ -7,6 +7,7 @@ import dateutil.parser
 import os
 import logging
 import re
+import json
 
 from cuckoo.common.abstracts import BehaviorHandler
 
@@ -40,6 +41,7 @@ class LinuxSystemTap(BehaviorHandler):
 
         self.processes = []
         self.forkmap = {}
+        self.behavior = {}
         self.matched = False
 
     def handles_path(self, path):
@@ -63,7 +65,7 @@ class LinuxSystemTap(BehaviorHandler):
             if self.is_newpid(pid):
                 p_pid = self.forkmap.get(pid, -1)
                 calls = FilteredProcessLog(parser, pid=pid)
-                self.processes.append({
+                process = {
                     "type": "process",
                     "pid": pid,
                     "ppid": p_pid,
@@ -71,26 +73,39 @@ class LinuxSystemTap(BehaviorHandler):
                     "first_seen": syscall["time"],
                     "command_line": "",
                     "calls": calls,
-                })
+                }
+                self.processes.append(process)
+                self.behavior[pid] = BehaviorReconstructor()
+                #yield process
+            
+            for category, arg in self.behavior[pid].process_apicall(syscall):    
+                yield {
+                        "type": "generic",
+                        "pid": pid,
+                        "category": category,
+                        "value": arg,
+                    }
 
-            self.post_hook(syscall)
+            p = self.post_hook(syscall)
+            if not p == None:
+                yield p
 
-        return self.processes
 
     def pre_hook(self, syscall):
-        if syscall["api"] == "clone":
+        fn = syscall["api"]
+        if fn == "clone" or fn == "fork" or fn == "vfork":
             self.forkmap[int(syscall["return_value"])] = syscall["pid"]
 
     def post_hook(self, syscall):
         if syscall["api"] == "execve":
             pid = self.get_proc(syscall["pid"])
-
             # only update proc info after first succesful execve in this pid
             if not syscall["return_value"] and not pid["command_line"]:
                 pid["process_name"] = os.path.basename(
-                    str(syscall["arguments"]["p0"])
+                    str(syscall["arguments"]["filename"])
                 )
-                pid["command_line"] = " ".join(syscall["arguments"]["p1"])
+                pid["command_line"] = " ".join(syscall["arguments"]["argv"])
+                return pid;
 
     def get_proc(self, pid):
         for process in self.processes:
@@ -107,11 +122,63 @@ class LinuxSystemTap(BehaviorHandler):
         self.processes.sort(key=lambda process: process["first_seen"])
         return self.processes
 
+def single(key, value):
+    return [(key, value)]
+
+def multiple(*l):
+    return l
+
+class BehaviorReconstructor(object):  
+    """Reconstructs the behavior of behavioral API logs."""
+    def __init__(self):
+        self.files = {}
+        self.sockets = {}
+
+
+    def process_apicall(self, event):
+        fn = getattr(self, "_api_%s" % event["api"], None)
+        if fn is not None:
+            ret = fn(
+                event["return_value"], event["arguments"], event.get("status")
+            )
+            return ret or []
+        return []
+
+    def _api_open(self, return_value, arguments, status):
+        self.files[return_value] = arguments["filename"]
+        return single("files_opened",(arguments["filename"]))
+
+    def _api_write(self, return_value, arguments, status):
+        if arguments["fd"] in self.files :
+            return single("files_writen",(self.files[arguments["fd"]]))
+
+    def _api_read(self, return_value, arguments, status):
+        if arguments["fd"] in self.files :
+            return single("files_read",(self.files[arguments["fd"]]))
+
+    def _api_close(self, return_value, arguments, status):
+        if arguments["fd"] in self.files: self.files.pop(arguments["fd"], None)
+        if arguments["fd"] in self.sockets: self.sockets.pop(arguments["fd"], None)
+
+    def _api_stat(self, return_value, arguments, status):
+        return single("file_exists",(arguments["filename"]))
+
+    def _api_connect(self, return_value, arguments, flags):
+        return single("connects_ip", (arguments["uservaddr"]))
+
+    def _api_socket(self, return_value, arguments, flags):
+        self.sockets[return_value] = arguments
+        return single("socket", (arguments["type"]))
+
+
 class StapParser(object):
     """Handle .stap logs from the Linux analyzer."""
 
     def __init__(self, fd):
         self.fd = fd
+        with open(os.path.join( os.path.dirname(__file__), "syscalls.json")) as json_file:
+            self.mappings = json.load(json_file)
+
 
     def __iter__(self):
         self.fd.seek(0)
@@ -132,15 +199,19 @@ class StapParser(object):
 
             pname, ip, pid, fn, args, _, retval, ecode = parts
             arguments = self.parse_args(args)
-
             pid = int(pid) if pid.isdigit() else -1
 
-            yield {
+            event = {
                 "time": dt, "process_name": pname, "pid": pid,
                 "instruction_pointer": ip, "api": fn, "arguments": arguments,
-                "return_value": retval, "status": ecode,
+                "return_value": retval, "status": ecode, "category" : "default",
                 "type": "apicall", "raw": line,
             }
+            mapping = self.mappings.get("sys_%s" % fn, [])
+            if not mapping == []:
+                self.rename_args(event["arguments"], mapping)
+
+            yield event
 
     def parse_args(self, args):
         p_args, n_args = {}, 0
@@ -204,3 +275,12 @@ class StapParser(object):
 
     def is_string(self, arg):
         return arg.startswith("\"") and arg.endswith("\"")
+
+    def rename_args(self, args, mapping):
+        n_args, key = 0,""
+        for newKey in mapping:
+            key = "p%u" % n_args
+            if args.get(key):
+                args[newKey["name"].encode('utf-8')] = args[key]
+                del args[key]
+            n_args += 1
