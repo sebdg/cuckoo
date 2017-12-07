@@ -57,7 +57,8 @@ def chunk(request, task_id, pid, pagenum):
         {
             "behavior.processes.pid": 1,
             "behavior.processes.calls": 1
-        }, sort=[("_id", pymongo.DESCENDING)]
+        },
+        sort=[("_id", pymongo.DESCENDING)]
     )
 
     if not record:
@@ -95,8 +96,14 @@ def filtered_chunk(request, task_id, pid, category):
 
     # Search calls related to your PID.
     record = results_db.analysis.find_one(
-        { "info.id": int(task_id), "behavior.processes.pid": int(pid), },
-        { "behavior.processes.pid": 1, "behavior.processes.calls": 1, },
+        {
+            "info.id": int(task_id),
+            "behavior.processes.pid": int(pid),
+        },
+        {
+            "behavior.processes.pid": 1,
+            "behavior.processes.calls": 1,
+        },
         sort=[("_id", pymongo.DESCENDING)]
     )
 
@@ -140,7 +147,9 @@ def search_behavior(request, task_id):
 
     # Fetch analysis report.
     record = results_db.analysis.find_one(
-        { "info.id": int(task_id) },
+        {
+            "info.id": int(task_id),
+        },
         sort=[("_id", pymongo.DESCENDING)]
     )
 
@@ -226,7 +235,9 @@ def file(request, category, object_id, fetch="fetch"):
 
         response = HttpResponse(file_item.read(), content_type=content_type)
 
-        if fetch != "nofetch":
+        if fetch == "plaintext":
+            response["Content-Type"] = "text/plain"
+        elif fetch != "nofetch":
             response["Content-Disposition"] = (
                 "attachment; filename=%s" % file_name
             )
