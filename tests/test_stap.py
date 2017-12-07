@@ -18,11 +18,11 @@ def test_stap_behavior():
         'ppid': 1522,
         'process_name': 'wget',
         'type': 'process'},
-        {'category': 'files_opened',
+        {'category': 'file_opened',
             'pid': 1523,
             'type': 'generic',
             'value': '/etc/rc.d/rc.local'},
-        {'category': 'files_opened',
+        {'category': 'file_opened',
             'pid': 1523,
             'type': 'generic',
             'value': '/etc/rc.conf'},
@@ -31,15 +31,14 @@ def test_stap_behavior():
             'pid': 1523,
             'type': 'generic',
             'value': "['AF_INET', '8.8.8.8', '53']"},
-        {'category': 'files_opened',
+        {'category': 'file_opened',
             'pid': 1523,
             'type': 'generic',
             'value': '/proc/net/route'},
-        {'category': 'files_read',
+        {'category': 'file_read',
             'pid': 1523,
             'type': 'generic',
             'value': '/proc/net/route'}])
-
 
 def test_stap_forks():
     ba = BehaviorAnalysis()
